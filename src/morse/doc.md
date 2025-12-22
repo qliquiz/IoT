@@ -68,3 +68,6 @@
 
 * **Цифры:** 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
 * **Буквы:** S, O, E, G, L, P, I, U, F, H, J, B, C
+
+#### Tinkercad:
+https://www.tinkercad.com/things/379gclzDlCx-morse?sharecode=saNgyZLq85YJbIsWrCBzV1gcYu8uvgvw2w80Adbxb6s
