@@ -1,3 +1,4 @@
+/*
 #include <Arduino.h>
 
 const uint8_t led_pins[] = {PB0, PB1, PB2, PB4, PB5};
@@ -39,3 +40,4 @@ ISR(TIMER1_COMPA_vect)
 void loop()
 {
 }
+*/

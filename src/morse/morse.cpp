@@ -1,18 +1,19 @@
+/*
 #include <Arduino.h>
 
-/** Pins **/
+/** Pins *#1#
 constexpr int PIN_RX = 2; // INT0
 constexpr int PIN_TX = 3; // OUT
 constexpr int PIN_SR_DATA = 4; // 74HC595 DS
 constexpr int PIN_SR_LATCH = 5; // 74HC595 ST_CP
 constexpr int PIN_SR_CLOCK = 6; // 74HC595 SH_CP
 constexpr int PIN_BTN = 7; // button
-/** Timings **/
+/** Timings *#1#
 constexpr unsigned long UNIT_TIME = 200;
 constexpr unsigned long TIMEOUT_GAP = UNIT_TIME * 3;
 constexpr unsigned long TIMEOUT_RX = UNIT_TIME * 6;
 
-/** Masks **/
+/** Masks *#1#
 byte digits[] = {
 	0b11111010, // 0
 	0b01100000, // 1
@@ -58,18 +59,18 @@ const byte LOOKUP_PATTERNS[] = {
 
 constexpr int DB_SIZE = 23;
 
-/** RX ISR Variables **/
+/** RX ISR Variables *#1#
 volatile unsigned long rxStartTime = 0;
 volatile bool rxActive = false;
 volatile char isrBuf[50]; // ring buffer
 volatile int isrHead = 0; // write to
 volatile int isrTail = 0; // read from
 
-/** RX Logic Variables **/
+/** RX Logic Variables *#1#
 String rxString = "";
 unsigned long lastRxTime = 0;
 
-/** TX FSM Variables **/
+/** TX FSM Variables *#1#
 String txQueue = ""; // text queue
 String txCurrentMorse = ""; // Morse code
 int txIndex = 0; // index of `txQueue`
@@ -77,12 +78,12 @@ int txSignalIndex = 0; // index of `txCurrentMorse`
 unsigned long txTimer = 0; // event timer
 bool txStateHigh = false; // diode state
 
-/** Sender state **/
+/** Sender state *#1#
 enum TxState { TX_IDLE, TX_GAP, TX_SIGNAL };
 
 TxState txState = TX_IDLE;
 
-/** Interrupt, it's called automatically when the voltage on `PIN_RX` changes **/
+/** Interrupt, it's called automatically when the voltage on `PIN_RX` changes *#1#
 void rxISR()
 {
 	const bool pin = digitalRead(PIN_RX);
@@ -118,7 +119,7 @@ void rxISR()
 	}
 }
 
-/** Utils **/
+/** Utils *#1#
 void showByte(const byte data)
 {
 	digitalWrite(PIN_SR_LATCH, LOW);
@@ -160,7 +161,7 @@ byte getPattern(const String &code)
 	return P_ERR;
 }
 
-/** Main **/
+/** Main *#1#
 void setup()
 {
 	pinMode(PIN_RX, INPUT);
@@ -180,7 +181,7 @@ void setup()
 	// test
 	/*showByte(digits[8]);
 	delay(500);
-	showByte(P_BLK);*/
+	showByte(P_BLK);#1#
 }
 
 void loop()
@@ -294,3 +295,4 @@ void loop()
 			break;
 	}
 }
+*/

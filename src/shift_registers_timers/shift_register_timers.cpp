@@ -1,4 +1,5 @@
 /*
+/*
  * Seven Segment Cascade Control via Shift Registers
  * Target: ATmega328P (Arduino Uno)
  *
@@ -16,7 +17,7 @@
  * Данные передаются последовательно (MSB first).
  * Первые 8 бит уйдут во ВТОРОЙ регистр (десятки).
  * Вторые 8 бит останутся в ПЕРВОМ регистре (единицы).
- */
+ #1#
 
 #include <HardwareSerial.h>
 #include <avr/interrupt.h>
@@ -213,3 +214,4 @@ ISR(TIMER1_COMPA_vect)
 		tx_state = IDLE; // Передача завершена, ждем следующей секунды
 	}
 }
+*/
