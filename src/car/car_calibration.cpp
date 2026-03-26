@@ -1,358 +1,281 @@
 #include <EEPROM.h>
 #include <SoftwareSerial.h>
 
-// === Пины ===
-#define DIR_RIGHT   4
-#define SPEED_RIGHT 5
-#define SPEED_LEFT  6
-#define DIR_LEFT    7
+// --- Конфигурация портов ---
+constexpr uint8_t R_DIR_PIN = 4;
+constexpr uint8_t R_PWM_PIN = 5;
+constexpr uint8_t L_PWM_PIN = 6;
+constexpr uint8_t L_DIR_PIN = 7;
 
-SoftwareSerial bt(2, 3);
+SoftwareSerial bluetooth(2, 3);
 
-// === Настройки ===
-#define BASE_SPEED   200
-#define DEFAULT_T90  400
-#define DEFAULT_T180 800
-#define DEFAULT_T270 1200
-#define DEFAULT_T360 1600
+// --- Системные константы ---
+constexpr int INITIAL_SPEED = 200;
+constexpr int T_STEP_90 = 400;
+constexpr int T_STEP_180 = 800;
+constexpr int T_STEP_270 = 1200;
+constexpr int T_STEP_360 = 1600;
+constexpr uint8_t STORAGE_KEY = 0xAB;
 
-// === EEPROM ===
-#define ADDR_VALID   0
-#define ADDR_FWD_L   1
-#define ADDR_FWD_R   2
-#define ADDR_BWD_L   3
-#define ADDR_BWD_R   4
-#define ADDR_ROTL_L  5
-#define ADDR_ROTL_R  6
-#define ADDR_ROTR_L  7
-#define ADDR_ROTR_R  8
-#define ADDR_SPD_L   9
-#define ADDR_SPD_R   10
-#define ADDR_T90     11
-#define EEPROM_MAGIC 0xAB
-
-constexpr bool DIR_COMBOS[4][2] = {
-	{LOW, LOW},
-	{HIGH, LOW},
-	{LOW, HIGH},
-	{HIGH, HIGH}
+// --- Адресация памяти (EEPROM) ---
+enum MemoryAddr
+{
+	ADDR_STATUS = 0,
+	ADDR_FWD_L, ADDR_FWD_R,
+	ADDR_BWD_L, ADDR_BWD_R,
+	ADDR_L_ROT_L, ADDR_L_ROT_R,
+	ADDR_R_ROT_L, ADDR_R_ROT_R,
+	ADDR_VAL_L, ADDR_VAL_R,
+	ADDR_TIME_BASE = 11
 };
 
-enum Mode { DIR_CAL, SPEED_BAL, TURN_TIME, RUN };
+// --- Состояния и Перечисления ---
+enum MachineState { CALIBRATE_DIR, BALANCE_SPEED, CALIBRATE_TIME, ACTIVE_RUN };
 
-enum Action { ACT_FWD = 0, ACT_BWD = 1, ACT_ROTL = 2, ACT_ROTR = 3 };
+enum MoveType { MOVE_FWD = 0, MOVE_BWD = 1, MOVE_ROT_L = 2, MOVE_ROT_R = 3 };
 
-bool cal_left_dir[4] = {LOW, HIGH, HIGH, LOW};
-bool cal_right_dir[4] = {LOW, HIGH, LOW, HIGH};
-int speed_left = BASE_SPEED;
-int speed_right = BASE_SPEED;
-uint16_t turn_ms[4] = {DEFAULT_T90, DEFAULT_T180, DEFAULT_T270, DEFAULT_T360};
+constexpr bool PIN_STATES[4][2] = {
+	{LOW, LOW}, {HIGH, LOW}, {LOW, HIGH}, {HIGH, HIGH}
+};
 
-Mode current_mode = DIR_CAL;
-Action current_action = ACT_FWD;
-uint8_t combo_idx = 0;
-uint8_t turn_idx = 0;
-bool edit_left = true; // SPEED_BAL: какое колесо редактируется
+// --- Глобальные переменные ---
+bool dir_map_l[4] = {LOW, HIGH, HIGH, LOW};
+bool dir_map_r[4] = {LOW, HIGH, LOW, HIGH};
+int pwm_l = INITIAL_SPEED;
+int pwm_r = INITIAL_SPEED;
+uint16_t rotation_intervals[4] = {T_STEP_90, T_STEP_180, T_STEP_270, T_STEP_360};
 
-// === Движение ===
-void move_raw(const bool ld, const int ls, const bool rd, const int rs)
+MachineState active_mode = CALIBRATE_DIR;
+MoveType active_move = MOVE_FWD;
+uint8_t ptr_combo = 0;
+uint8_t ptr_time = 0;
+bool focus_left = true;
+
+// --- Базовое управление моторами ---
+void drive(const bool l_dir, const int l_spd, const bool r_dir, const int r_spd)
 {
-	digitalWrite(DIR_LEFT, ld);
-	digitalWrite(DIR_RIGHT, rd);
-	analogWrite(SPEED_LEFT, ls);
-	analogWrite(SPEED_RIGHT, rs);
+	digitalWrite(L_DIR_PIN, l_dir);
+	digitalWrite(R_DIR_PIN, r_dir);
+	analogWrite(L_PWM_PIN, l_spd);
+	analogWrite(R_PWM_PIN, r_spd);
 }
 
-void stop_car() { move_raw(LOW, 0, LOW, 0); }
+void brakes() { drive(LOW, 0, LOW, 0); }
 
-void do_action(Action a) { move_raw(cal_left_dir[a], speed_left, cal_right_dir[a], speed_right); }
+void execMove(const MoveType m) { drive(dir_map_l[m], pwm_l, dir_map_r[m], pwm_r); }
 
-// === EEPROM ===
-void eeprom_save()
+// --- Работа с энергонезависимой памятью ---
+void saveSettings()
 {
-	EEPROM.write(ADDR_FWD_L, cal_left_dir[ACT_FWD]);
-	EEPROM.write(ADDR_FWD_R, cal_right_dir[ACT_FWD]);
-	EEPROM.write(ADDR_BWD_L, cal_left_dir[ACT_BWD]);
-	EEPROM.write(ADDR_BWD_R, cal_right_dir[ACT_BWD]);
-	EEPROM.write(ADDR_ROTL_L, cal_left_dir[ACT_ROTL]);
-	EEPROM.write(ADDR_ROTL_R, cal_right_dir[ACT_ROTL]);
-	EEPROM.write(ADDR_ROTR_L, cal_left_dir[ACT_ROTR]);
-	EEPROM.write(ADDR_ROTR_R, cal_right_dir[ACT_ROTR]);
-	EEPROM.write(ADDR_SPD_L, static_cast<uint8_t>(speed_left));
-	EEPROM.write(ADDR_SPD_R, static_cast<uint8_t>(speed_right));
+	EEPROM.write(ADDR_FWD_L, dir_map_l[MOVE_FWD]);
+	EEPROM.write(ADDR_FWD_R, dir_map_r[MOVE_FWD]);
+	EEPROM.write(ADDR_BWD_L, dir_map_l[MOVE_BWD]);
+	EEPROM.write(ADDR_BWD_R, dir_map_r[MOVE_BWD]);
+	EEPROM.write(ADDR_L_ROT_L, dir_map_l[MOVE_ROT_L]);
+	EEPROM.write(ADDR_L_ROT_R, dir_map_r[MOVE_ROT_L]);
+	EEPROM.write(ADDR_R_ROT_L, dir_map_l[MOVE_ROT_R]);
+	EEPROM.write(ADDR_R_ROT_R, dir_map_r[MOVE_ROT_R]);
+	EEPROM.write(ADDR_VAL_L, static_cast<uint8_t>(pwm_l));
+	EEPROM.write(ADDR_VAL_R, static_cast<uint8_t>(pwm_r));
+
 	for (int i = 0; i < 4; i++)
 	{
-		const int a = ADDR_T90 + i * 2;
-		EEPROM.write(a, static_cast<uint8_t>(turn_ms[i] >> 8));
-		EEPROM.write(a + 1, static_cast<uint8_t>(turn_ms[i] & 0xFF));
+		const int cell = ADDR_TIME_BASE + i * 2;
+		EEPROM.write(cell, static_cast<uint8_t>(rotation_intervals[i] >> 8));
+		EEPROM.write(cell + 1, static_cast<uint8_t>(rotation_intervals[i] & 0xFF));
 	}
-	EEPROM.write(ADDR_VALID, EEPROM_MAGIC);
+	EEPROM.write(ADDR_STATUS, STORAGE_KEY);
 }
 
-void eeprom_load()
+void loadSettings()
 {
-	cal_left_dir[ACT_FWD] = EEPROM.read(ADDR_FWD_L);
-	cal_right_dir[ACT_FWD] = EEPROM.read(ADDR_FWD_R);
-	cal_left_dir[ACT_BWD] = EEPROM.read(ADDR_BWD_L);
-	cal_right_dir[ACT_BWD] = EEPROM.read(ADDR_BWD_R);
-	cal_left_dir[ACT_ROTL] = EEPROM.read(ADDR_ROTL_L);
-	cal_right_dir[ACT_ROTL] = EEPROM.read(ADDR_ROTL_R);
-	cal_left_dir[ACT_ROTR] = EEPROM.read(ADDR_ROTR_L);
-	cal_right_dir[ACT_ROTR] = EEPROM.read(ADDR_ROTR_R);
-	speed_left = EEPROM.read(ADDR_SPD_L);
-	speed_right = EEPROM.read(ADDR_SPD_R);
+	dir_map_l[MOVE_FWD] = EEPROM.read(ADDR_FWD_L);
+	dir_map_r[MOVE_FWD] = EEPROM.read(ADDR_FWD_R);
+	dir_map_l[MOVE_BWD] = EEPROM.read(ADDR_BWD_L);
+	dir_map_r[MOVE_BWD] = EEPROM.read(ADDR_BWD_R);
+	dir_map_l[MOVE_ROT_L] = EEPROM.read(ADDR_L_ROT_L);
+	dir_map_r[MOVE_ROT_L] = EEPROM.read(ADDR_L_ROT_R);
+	dir_map_l[MOVE_ROT_R] = EEPROM.read(ADDR_R_ROT_L);
+	dir_map_r[MOVE_ROT_R] = EEPROM.read(ADDR_R_ROT_R);
+	pwm_l = EEPROM.read(ADDR_VAL_L);
+	pwm_r = EEPROM.read(ADDR_VAL_R);
+
 	for (int i = 0; i < 4; i++)
 	{
-		int a = ADDR_T90 + i * 2;
-		turn_ms[i] = static_cast<uint16_t>(EEPROM.read(a)) << 8 | EEPROM.read(a + 1);
+		const int cell = ADDR_TIME_BASE + i * 2;
+		rotation_intervals[i] = static_cast<uint16_t>(EEPROM.read(cell)) << 8 | EEPROM.read(cell + 1);
 	}
 }
 
-// === Логи ===
-const char *action_name(const Action a)
+// --- Обратная связь в Serial ---
+void displayInfo()
 {
-	switch (a)
+	switch (active_mode)
 	{
-		case ACT_FWD: return "FORWARD";
-		case ACT_BWD: return "BACKWARD";
-		case ACT_ROTL: return "ROTATE_LEFT";
-		case ACT_ROTR: return "ROTATE_RIGHT";
-	}
-	return "?";
-}
-
-void print_status()
-{
-	switch (current_mode)
-	{
-		case DIR_CAL:
-			Serial.print(F("DIR_CAL | action="));
-			Serial.print(action_name(current_action));
-			Serial.print(F(" | combo="));
-			Serial.print(combo_idx);
-			Serial.print(F(" L="));
-			Serial.print(DIR_COMBOS[combo_idx][0]);
-			Serial.print(F(" R="));
-			Serial.println(DIR_COMBOS[combo_idx][1]);
+		case CALIBRATE_DIR:
+			Serial.print(F("MODE:DIR_CAL | Act:"));
+			Serial.print(active_move);
+			Serial.print(F(" | Set:"));
+			Serial.print(ptr_combo);
+			Serial.print(F(" L/R:"));
+			Serial.print(PIN_STATES[ptr_combo][0]);
+			Serial.print(F("/"));
+			Serial.println(PIN_STATES[ptr_combo][1]);
 			break;
-		case SPEED_BAL:
-			Serial.print(F("SPEED_BAL | editing="));
-			Serial.print(edit_left ? F("LEFT") : F("RIGHT"));
-			Serial.print(F(" | spd_L="));
-			Serial.print(speed_left);
-			Serial.print(F(" spd_R="));
-			Serial.println(speed_right);
+		case BALANCE_SPEED:
+			Serial.print(F("MODE:SPEED | Edit:"));
+			Serial.print(focus_left ? F("L") : F("R"));
+			Serial.print(F(" | Spd L:"));
+			Serial.print(pwm_l);
+			Serial.print(F(" R:"));
+			Serial.println(pwm_r);
 			break;
-		case TURN_TIME:
-			Serial.print(F("TURN_TIME | angle="));
-			Serial.print(turn_idx * 90 + 90);
-			Serial.print(F("deg | ms="));
-			Serial.println(turn_ms[turn_idx]);
+		case CALIBRATE_TIME:
+			Serial.print(F("MODE:TIME | Deg:"));
+			Serial.print(ptr_time * 90 + 90);
+			Serial.print(F(" | MS:"));
+			Serial.println(rotation_intervals[ptr_time]);
 			break;
-		case RUN:
-			Serial.println(F("RUN"));
+		case ACTIVE_RUN:
+			Serial.println(F("STATUS: RUNNING"));
 			break;
 	}
 }
 
-// === Обработка команд ===
-void handle_command(const char c)
+// --- Логика обработки команд ---
+void processSerial(const char cmd)
 {
-	switch (current_mode)
+	if (active_mode == CALIBRATE_DIR)
 	{
-		// -----------------------------------------------
-		// РЕЖИМ 1 — DIR_CAL: калибровка направлений
-		//
-		// ▲ F  — запустить моторы с текущей комбинацией
-		// ▼ B  — стоп
-		// × X  — следующая комбинация DIR (4 варианта)
-		// □ S  — подтвердить, перейти к следующему действию
-		// ▶ R  — пропустить к следующему действию
-		// ○ C  — вернуться к предыдущему действию
-		// △ T  — перейти в режим SPEED_BAL
-		// -----------------------------------------------
-		case DIR_CAL:
-			if (c == 'F')
-			{
-				move_raw(DIR_COMBOS[combo_idx][0], speed_left,
-				         DIR_COMBOS[combo_idx][1], speed_right);
-			} else if (c == 'B') { stop_car(); } else if (c == 'X')
-			{
-				// × — следующая комбинация
-				stop_car();
-				combo_idx = (combo_idx + 1) % 4;
-				move_raw(DIR_COMBOS[combo_idx][0], speed_left,
-				         DIR_COMBOS[combo_idx][1], speed_right);
-			} else if (c == 'S')
-			{
-				// □ — подтвердить
-				cal_left_dir[current_action] = DIR_COMBOS[combo_idx][0];
-				cal_right_dir[current_action] = DIR_COMBOS[combo_idx][1];
-				stop_car();
-				if (current_action < ACT_ROTR)
-				{
-					current_action = static_cast<Action>(current_action + 1);
-					combo_idx = 0;
-				}
-			} else if (c == 'R')
-			{
-				// ▶ — пропустить вперёд
-				stop_car();
-				if (current_action < ACT_ROTR)
-				{
-					current_action = static_cast<Action>(current_action + 1);
-					combo_idx = 0;
-				}
-			} else if (c == 'C')
-			{
-				// ○ — вернуться назад
-				stop_car();
-				if (current_action > ACT_FWD)
-				{
-					current_action = static_cast<Action>(current_action - 1);
-					combo_idx = 0;
-				}
-			} else if (c == 'T')
-			{
-				stop_car();
-				current_mode = SPEED_BAL;
-				edit_left = true;
-			}
-			break;
-
-		// -----------------------------------------------
-		// РЕЖИМ 2 — SPEED_BAL: балансировка скоростей
-		//
-		// ▲ F  — ехать вперёд (тест)
-		// ▼ B  — стоп
-		// × X  — переключить редактируемое колесо (L ↔ R)
-		// ▶ R  — выбранное колесо быстрее (+5)
-		// ◀ L  — выбранное колесо медленнее (-5)
-		// ○ C  — сброс скоростей к базовым
-		// △ T  — перейти в режим TURN_TIME
-		// -----------------------------------------------
-		case SPEED_BAL:
-			if (c == 'F') { do_action(ACT_FWD); } else if (c == 'B') { stop_car(); } else if (c == 'X')
-			{
-				edit_left = !edit_left;
-			} // × — переключить колесо
-			else if (c == 'R')
-			{
-				if (edit_left) speed_left = constrain(speed_left + 5, 0, 255);
-				else speed_right = constrain(speed_right + 5, 0, 255);
-			} else if (c == 'L')
-			{
-				if (edit_left) speed_left = constrain(speed_left - 5, 0, 255);
-				else speed_right = constrain(speed_right - 5, 0, 255);
-			} else if (c == 'C') { speed_left = speed_right = BASE_SPEED; } // ○ — сброс
-			else if (c == 'T')
-			{
-				stop_car();
-				current_mode = TURN_TIME;
-				turn_idx = 0;
-			}
-			break;
-
-		// -----------------------------------------------
-		// РЕЖИМ 3 — TURN_TIME: калибровка времени поворотов
-		//
-		// ▲ F  — тестовый поворот на текущий угол
-		// ▶ R  — +50 мс
-		// ◀ L  — -50 мс
-		// □ S  — подтвердить угол, перейти к следующему
-		// × X  — сброс времени текущего угла
-		// ○ C  — вернуться к предыдущему углу
-		// △ T  — сохранить в EEPROM и перейти в RUN
-		// -----------------------------------------------
-		case TURN_TIME:
+		if (cmd == 'F') drive(PIN_STATES[ptr_combo][0], pwm_l, PIN_STATES[ptr_combo][1], pwm_r);
+		else if (cmd == 'B') brakes();
+		else if (cmd == 'X')
 		{
-			if (c == 'F')
+			brakes();
+			ptr_combo = (ptr_combo + 1) % 4;
+			drive(PIN_STATES[ptr_combo][0], pwm_l, PIN_STATES[ptr_combo][1], pwm_r);
+		} else if (cmd == 'S')
+		{
+			dir_map_l[active_move] = PIN_STATES[ptr_combo][0];
+			dir_map_r[active_move] = PIN_STATES[ptr_combo][1];
+			brakes();
+			if (active_move < MOVE_ROT_R)
 			{
-				do_action(ACT_ROTL);
-				delay(turn_ms[turn_idx]);
-				stop_car();
-			} else if (c == 'R') { turn_ms[turn_idx] = constrain((int)turn_ms[turn_idx] + 50, 50, 9999); } else if (
-				c == 'L') { turn_ms[turn_idx] = constrain((int)turn_ms[turn_idx] - 50, 50, 9999); } else if (c == 'S')
-			{
-				if (turn_idx < 3) turn_idx++;
-			} // □ — следующий угол
-			else if (c == 'X')
-			{
-				constexpr uint16_t DEF[4] = {DEFAULT_T90, DEFAULT_T180, DEFAULT_T270, DEFAULT_T360};
-				turn_ms[turn_idx] = DEF[turn_idx];
-			} // × — сброс
-			else if (c == 'C') { if (turn_idx > 0) turn_idx--; } // ○ — предыдущий угол
-			else if (c == 'T')
-			{
-				stop_car();
-				eeprom_save();
-				current_mode = RUN;
+				active_move = static_cast<MoveType>(active_move + 1);
+				ptr_combo = 0;
 			}
-			break;
+		} else if (cmd == 'R')
+		{
+			brakes();
+			if (active_move < MOVE_ROT_R)
+			{
+				active_move = static_cast<MoveType>(active_move + 1);
+				ptr_combo = 0;
+			}
+		} else if (cmd == 'C')
+		{
+			brakes();
+			if (active_move > MOVE_FWD)
+			{
+				active_move = static_cast<MoveType>(active_move - 1);
+				ptr_combo = 0;
+			}
+		} else if (cmd == 'T')
+		{
+			brakes();
+			active_mode = BALANCE_SPEED;
+			focus_left = true;
 		}
-
-		// -----------------------------------------------
-		// РЕЖИМ 4 — RUN: езда
-		//
-		// ▲ F  — вперёд
-		// ▼ B  — назад
-		// ◀ L  — поворот влево
-		// ▶ R  — поворот вправо
-		// □ S  — стоп
-		// × X  — сброс калибровки, вернуться в DIR_CAL
-		// △ T  — (не используется)
-		// -----------------------------------------------
-		case RUN:
-			if (c == 'F') do_action(ACT_FWD);
-			else if (c == 'B') do_action(ACT_BWD);
-			else if (c == 'L') do_action(ACT_ROTL);
-			else if (c == 'R') do_action(ACT_ROTR);
-			else if (c == 'S') stop_car();
-			else if (c == 'X')
-			{
-				stop_car();
-				EEPROM.write(ADDR_VALID, 0x00);
-				current_mode = DIR_CAL;
-				current_action = ACT_FWD;
-				combo_idx = 0;
-				speed_left = speed_right = BASE_SPEED;
-			}
-			break;
+	} else if (active_mode == BALANCE_SPEED)
+	{
+		if (cmd == 'F') execMove(MOVE_FWD);
+		else if (cmd == 'B') brakes();
+		else if (cmd == 'X') focus_left = !focus_left;
+		else if (cmd == 'R')
+		{
+			if (focus_left) pwm_l = constrain(pwm_l + 5, 0, 255);
+			else pwm_r = constrain(pwm_r + 5, 0, 255);
+		} else if (cmd == 'L')
+		{
+			if (focus_left) pwm_l = constrain(pwm_l - 5, 0, 255);
+			else pwm_r = constrain(pwm_r - 5, 0, 255);
+		} else if (cmd == 'C') pwm_l = pwm_r = INITIAL_SPEED;
+		else if (cmd == 'T')
+		{
+			brakes();
+			active_mode = CALIBRATE_TIME;
+			ptr_time = 0;
+		}
+	} else if (active_mode == CALIBRATE_TIME)
+	{
+		if (cmd == 'F')
+		{
+			execMove(MOVE_ROT_L);
+			delay(rotation_intervals[ptr_time]);
+			brakes();
+		} else if (cmd == 'R')
+			rotation_intervals[ptr_time] = constrain((int)rotation_intervals[ptr_time] + 50, 50,
+			                                         9999);
+		else if (cmd == 'L') rotation_intervals[ptr_time] = constrain((int)rotation_intervals[ptr_time] - 50, 50, 9999);
+		else if (cmd == 'S') { if (ptr_time < 3) ptr_time++; } else if (cmd == 'X')
+		{
+			constexpr uint16_t defaults[4] = {T_STEP_90, T_STEP_180, T_STEP_270, T_STEP_360};
+			rotation_intervals[ptr_time] = defaults[ptr_time];
+		} else if (cmd == 'C') { if (ptr_time > 0) ptr_time--; } else if (cmd == 'T')
+		{
+			brakes();
+			saveSettings();
+			active_mode = ACTIVE_RUN;
+		}
+	} else if (active_mode == ACTIVE_RUN)
+	{
+		if (cmd == 'F') execMove(MOVE_FWD);
+		else if (cmd == 'B') execMove(MOVE_BWD);
+		else if (cmd == 'L') execMove(MOVE_ROT_L);
+		else if (cmd == 'R') execMove(MOVE_ROT_R);
+		else if (cmd == 'S') brakes();
+		else if (cmd == 'X')
+		{
+			brakes();
+			EEPROM.write(ADDR_STATUS, 0x00);
+			active_mode = CALIBRATE_DIR;
+			active_move = MOVE_FWD;
+			pwm_l = pwm_r = INITIAL_SPEED;
+		}
 	}
-
-	print_status();
+	displayInfo();
 }
 
 void setup()
 {
 	Serial.begin(57600);
 
-	pinMode(DIR_RIGHT, OUTPUT);
-	pinMode(SPEED_RIGHT, OUTPUT);
-	pinMode(DIR_LEFT, OUTPUT);
-	pinMode(SPEED_LEFT, OUTPUT);
+	pinMode(R_DIR_PIN, OUTPUT);
+	pinMode(R_PWM_PIN, OUTPUT);
+	pinMode(L_DIR_PIN, OUTPUT);
+	pinMode(L_PWM_PIN, OUTPUT);
 
-	bt.begin(9600);
-	stop_car();
+	bluetooth.begin(9600);
+	brakes();
 
-	if (EEPROM.read(ADDR_VALID) == EEPROM_MAGIC)
+	if (EEPROM.read(ADDR_STATUS) == STORAGE_KEY)
 	{
-		eeprom_load();
-		current_mode = RUN;
-		Serial.println(F("Калибровка загружена — режим RUN"));
-	} else { Serial.println(F("Нет калибровки — режим DIR_CAL")); }
-
-	print_status();
+		loadSettings();
+		active_mode = ACTIVE_RUN;
+		Serial.println(F("Settings loaded. RUN mode."));
+	} else { Serial.println(F("No config. CALIBRATION mode.")); }
+	displayInfo();
 }
 
 void loop()
 {
-	if (bt.available() > 0)
+	if (bluetooth.available() > 0)
 	{
-		const char c = static_cast<char>(bt.read());
-		if (c == ' ' || c == '\n' || c == '\r' || c == '\t') return;
-		Serial.print(F("RX: "));
-		Serial.println(c);
-		handle_command(c);
+		const char input = static_cast<char>(bluetooth.read());
+		if (isspace(input)) return;
+
+		Serial.print(F("Input: "));
+		Serial.println(input);
+		processSerial(input);
 	}
 }
